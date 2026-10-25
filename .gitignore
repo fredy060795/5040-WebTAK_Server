@@ -1,0 +1,6 @@
+/dist/
+/takdata/
+/webtak-server
+/webtak-server.exe
+*.test
+/5040-WebTAK_Server
