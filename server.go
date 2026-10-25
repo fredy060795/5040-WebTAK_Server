@@ -26,10 +26,21 @@ type Ports struct {
 	HTTP   int // Marti API (plain) + web UI for this computer
 	Enroll int // certificate enrollment (ATAK / iTAK QR)
 	Fed    int // federation
+
+	// video server (MediaMTX), same ports as in OpenTAKServer
+	RTSP      int
+	RTMP      int
+	HLS       int
+	WebRTC    int
+	WebRTCUDP int
+	SRT       int
+	RTP       int // RTP, RTCP = RTP+1
+	MediaAPI  int // MediaMTX control API, only on 127.0.0.1
 }
 
 func DefaultPorts() Ports {
-	return Ports{TCP: 8088, SSL: 8089, HTTPS: 8443, HTTP: 8080, Enroll: 8446, Fed: 9000}
+	return Ports{TCP: 8088, SSL: 8089, HTTPS: 8443, HTTP: 8080, Enroll: 8446, Fed: 9000,
+		RTSP: 8554, RTMP: 1935, HLS: 8888, WebRTC: 8889, WebRTCUDP: 8189, SRT: 8890, RTP: 8000, MediaAPI: 9997}
 }
 
 type Server struct {
@@ -41,6 +52,8 @@ type Server struct {
 	hub      *Hub
 	fed      *Federation
 	packages *PackageStore
+	media    *Media
+	bridges  *Bridges
 	sessions *sessionStore
 	started  time.Time
 
@@ -52,6 +65,9 @@ type Server struct {
 }
 
 func NewServer(dataDir string, ports Ports) (*Server, error) {
+	if abs, err := filepath.Abs(dataDir); err == nil {
+		dataDir = abs // child programs (MediaMTX) run in other folders
+	}
 	st, err := OpenStore(dataDir)
 	if err != nil {
 		return nil, err
@@ -76,6 +92,8 @@ func NewServer(dataDir string, ports Ports) (*Server, error) {
 	s.hub = NewHub(s)
 	s.fed = NewFederation(s)
 	s.hub.fed = s.fed
+	s.media = NewMedia(s)
+	s.bridges = NewBridges(s)
 	return s, nil
 }
 
@@ -120,7 +138,11 @@ func (s *Server) Start() error {
 	if s.ports.SSL <= 0 && s.ports.HTTPS <= 0 && s.ports.HTTP <= 0 {
 		return errors.New("no port could be opened: " + strings.Join(problems, "; "))
 	}
+	if err := s.media.Start(); err != nil {
+		logf("WARNING video server: %v", err)
+	}
 	s.fed.Start()
+	s.bridges.Start()
 	s.wg.Add(1)
 	go s.maintenance()
 	return nil
@@ -138,6 +160,8 @@ func (s *Server) Close() {
 		c.Close()
 	}
 	s.fed.Stop()
+	s.bridges.Stop()
+	s.media.Stop()
 	s.wg.Wait()
 	s.store.Close()
 }

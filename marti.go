@@ -7,11 +7,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"html"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -141,8 +143,14 @@ func (s *Server) signClient(w http.ResponseWriter, r *http.Request, username str
 		w.Write(ts)
 		return
 	}
-	if strings.Contains(r.Header.Get("Accept"), "json") {
-		writeJSON(w, 200, map[string]string{"signedCert": signed, "ca0": ca})
+	// like OpenTAKServer: JSON unless the device explicitly asks for XML (iTAK wants JSON as text/plain)
+	if accept := r.Header.Get("Accept"); accept == "" || accept == "*/*" || accept == "text/plain" || strings.Contains(accept, "json") {
+		ct := "application/json"
+		if accept == "text/plain" {
+			ct = "text/plain; charset=UTF-8"
+		}
+		w.Header().Set("Content-Type", ct)
+		json.NewEncoder(w).Encode(map[string]string{"signedCert": signed, "ca0": ca, "ca1": ca})
 		return
 	}
 	w.Header().Set("Content-Type", "application/xml")
@@ -326,14 +334,27 @@ func (s *Server) martiSearch(w http.ResponseWriter, r *http.Request) {
 
 // ---------- video connections (ATAK "Video" list from the server) ----------
 
+// Video list for ATAK / iTAK ("Video" → server feeds), in the format of OpenTAKServer: streams on our
+// video server point to this server under the address the device used.
 func (s *Server) martiVideo(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		for _, m := range reFeed.FindAllSubmatch(body, -1) {
 			inner := m[1]
-			alias, url, uid := xmlField(inner, "alias"), xmlField(inner, "url"), xmlField(inner, "uid")
-			if url == "" {
-				continue
+			alias, link, uid := xmlField(inner, "alias"), xmlField(inner, "url"), xmlField(inner, "uid")
+			if link == "" { // OTS / ATAK format: protocol + address + port + path
+				proto, addr, port, path := xmlField(inner, "protocol"), xmlField(inner, "address"), xmlField(inner, "port"), xmlField(inner, "path")
+				if addr == "" || proto == "" {
+					continue
+				}
+				if i := strings.LastIndex(addr, "@"); i >= 0 {
+					addr = addr[i+1:] // never store passwords
+				}
+				hp := addr
+				if port != "" && port != "-1" {
+					hp = joinHostPort(addr, atoiDefault(port, 0))
+				}
+				link = proto + "://" + hp + "/" + strings.TrimPrefix(path, "/")
 			}
 			if uid == "" {
 				uid = randomHex(8)
@@ -341,26 +362,55 @@ func (s *Server) martiVideo(w http.ResponseWriter, r *http.Request) {
 			s.store.Update(func(st *State) {
 				for _, v := range st.Videos {
 					if v.UID == uid {
-						v.Alias, v.URL = alias, url
+						v.Alias, v.URL = alias, link
 						return
 					}
 				}
-				st.Videos = append(st.Videos, &VideoFeed{UID: uid, Alias: alias, URL: url, Created: time.Now()})
+				st.Videos = append(st.Videos, &VideoFeed{UID: uid, Alias: orDefault(alias, link), URL: link, Created: time.Now()})
 			})
 		}
 		w.WriteHeader(200)
 		return
 	}
+	host := clientHost(r)
+	itak := strings.Contains(r.UserAgent(), "iTAK")
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><videoConnections>`)
-	s.store.Read(func(st *State) {
-		for _, v := range st.Videos {
-			fmt.Fprintf(&b, `<feed><uid>%s</uid><active>true</active><alias>%s</alias><url>%s</url></feed>`, xmlEscape(v.UID), xmlEscape(v.Alias), xmlEscape(v.URL))
+	feed := func(uid, alias, proto, addr string, port int, path string) {
+		if itak { // iTAK wants the whole address, like OTS sends it
+			addr = proto + "://" + joinHostPort(addr, port) + "/" + strings.TrimPrefix(path, "/")
 		}
-	})
+		fmt.Fprintf(&b, `<feed><protocol>%s</protocol><alias>%s</alias><uid>%s</uid><address>%s</address><port>%d</port><roverPort>-1</roverPort><ignoreEmbeddedKLV>false</ignoreEmbeddedKLV><preferredMacAddress></preferredMacAddress><preferredInterfaceAddress></preferredInterfaceAddress><path>/%s</path><buffer></buffer><timeout>10000</timeout><rtspReliable>1</rtspReliable></feed>`,
+			xmlEscape(proto), xmlEscape(alias), xmlEscape(uid), xmlEscape(addr), port, xmlEscape(strings.TrimPrefix(path, "/")))
+	}
+	for _, f := range s.media.Feeds() {
+		if f.Path != "" {
+			if s.ports.RTSP > 0 {
+				feed(f.UID, f.Alias, "rtsp", host, s.ports.RTSP, f.Path)
+			}
+			continue
+		}
+		u, err := url.Parse(f.URL)
+		if err != nil || u.Host == "" {
+			continue
+		}
+		port := atoiDefault(u.Port(), map[string]int{"rtsp": 554, "rtmp": 1935, "http": 80, "https": 443, "srt": 8890}[u.Scheme])
+		path := u.Path
+		if u.RawQuery != "" {
+			path += "?" + u.RawQuery
+		}
+		feed(f.UID, f.Alias, u.Scheme, u.Hostname(), port, path)
+	}
 	b.WriteString(`</videoConnections>`)
 	w.Header().Set("Content-Type", "application/xml")
 	fmt.Fprint(w, b.String())
+}
+
+func atoiDefault(s string, d int) int {
+	if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+		return n
+	}
+	return d
 }
 
 func (s *Server) martiMissions(w http.ResponseWriter) {

@@ -36,6 +36,7 @@ func startServer(t *testing.T, name string) *Server {
 		s.Config.ServerName = name
 		s.Config.PublicHost = "127.0.0.1"
 		s.Config.SetupDone = true
+		s.Config.VideoEnabled = false // the video tests switch it on
 	})
 	if err := srv.Start(); err != nil {
 		t.Fatal(err)

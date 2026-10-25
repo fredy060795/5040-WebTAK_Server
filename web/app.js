@@ -153,6 +153,10 @@ async function pageDashboard() {
       ${portRow('HTTPS: web interface + data packages', p.HTTPS, 'https://' + esc(d.publicHost) + ':' + p.HTTPS)}
       ${portRow('HTTP: data packages', p.HTTP, 'web interface only from this computer')}
       ${portRow('Federation', p.Fed, 'links to other servers')}
+      ${portRow('Video RTSP', p.RTSP, 'cameras send / ATAK plays video')}
+      ${portRow('Video RTMP', p.RTMP, 'DJI drones, OBS, Larix')}
+      ${portRow('Video SRT (UDP)', p.SRT, 'OBS, Larix over mobile networks')}
+      ${portRow('Video HLS / WebRTC', p.HLS, 'watch in the browser (WebRTC ' + p.WebRTC + ')')}
       </table></div>
       <p class="hint small">From outside your network (internet): forward these TCP ports in your router to this computer, or use ZeroTier / Tailscale (no port forwarding needed).</p>
     </div>
@@ -392,7 +396,7 @@ async function pageMap() {
 // ---------------------------------------------------------------- federation
 
 async function pageFederation() {
-  const [f, groups] = await Promise.all([api('GET', 'federation'), api('GET', 'groups')]);
+  const [f, groups, bridges] = await Promise.all([api('GET', 'federation'), api('GET', 'groups'), api('GET', 'bridges')]);
   app.innerHTML = `<h1>Federation</h1>
     <p class="muted">Link this server with other WebTAK Servers. Devices on all linked servers see each other – positions, markers, chat and data packages, in both directions.</p>
     ${f.enabled ? '' : '<p class="hint">Incoming federation connections are switched off under Settings.</p>'}
@@ -423,6 +427,38 @@ async function pageFederation() {
     ${f.invites && f.invites.length ? `<div class="card table-wrap"><h2>Open invites</h2><table><tr><th>Note</th><th>Created</th><th>Valid until</th><th></th></tr>
       ${f.invites.map(i => `<tr><td>${esc(i.label || '–')}</td><td>${ago(i.created)}</td><td>${esc(new Date(i.expires).toLocaleString())}</td>
         <td><button class="small danger" data-inv="${esc(i.token)}">Cancel</button></td></tr>`).join('')}</table></div>` : ''}
+    <div class="card table-wrap"><h2>OpenTAKServer and other TAK servers</h2>
+      <p class="small">OpenTAKServer has no server federation – this server connects to it like a device instead (a "bridge") and relays in both
+      directions: everyone on the OTS sees the devices here and on all linked WebTAK Servers, and the other way round. Works with OpenTAKServer,
+      TAK Server and FreeTAKServer.</p>
+      <table><tr><th>TAK server</th><th>Status</th><th>Video</th><th>Traffic</th><th></th></tr>
+      ${bridges.map(b => `<tr data-bid="${esc(b.id)}"><td><b>${esc(b.name)}</b><div class="small muted">${esc(b.host)}:${b.streamPort} ${b.tls ? 'SSL' : 'TCP'} · user ${esc(b.username || '–')}</div>
+        <div class="small muted">appears there as <i>${esc(b.callsign)}</i></div></td>
+        <td>${!b.enabled ? '<span class="dot"></span>switched off' : b.connected ? `<span class="dot ok"></span>connected ${ago(b.since)}` : '<span class="dot bad"></span>not connected'}
+          ${b.error ? `<div class="small err">${esc(b.error)}</div>` : ''}</td>
+        <td class="small">${b.importVideo ? 'shows its video here' : ''}${b.importVideo && b.exportVideo ? '<br>' : ''}${b.exportVideo ? 'shares our video there' : ''}${!b.importVideo && !b.exportVideo ? '–' : ''}</td>
+        <td class="small">${b.connected ? `${b.rx} in / ${b.tx} out` : ''}</td>
+        <td class="row"><button class="small ghost" data-b="edit">Edit</button><button class="small ghost" data-b="toggle">${b.enabled ? 'Switch off' : 'Switch on'}</button><button class="small danger" data-b="del">Remove</button></td></tr>`).join('')
+        || '<tr><td colspan="5" class="muted">No TAK server connected.</td></tr>'}</table>
+      <details style="margin-top:12px"><summary><b>+ Connect an OpenTAKServer / TAK server</b></summary>
+      <form id="bf">
+        <p class="small">1. On the OTS create a user for this bridge (e.g. <code>webtak-bridge</code>) and put it into the groups that should be shared.<br>
+        2. Enter its address and login here. The certificate is requested automatically (like ATAK's QR setup).</p>
+        <div class="row"><div style="flex:2;min-width:200px"><label>Address of the TAK server</label><input type="text" name="host" required placeholder="ots.example.com or 192.168.1.20"></div>
+        <div style="flex:1;min-width:140px"><label>Name (optional)</label><input type="text" name="name" placeholder="e.g. OTS Unit A"></div></div>
+        <div class="row"><div style="flex:1;min-width:160px"><label>User name on that server</label><input type="text" name="username"></div>
+        <div style="flex:1;min-width:160px"><label>Password</label><input type="password" name="password" autocomplete="new-password"></div></div>
+        <label class="check"><input type="checkbox" name="tls" checked> SSL (port 8089 with certificate – recommended). Unchecked: unencrypted TCP port 8088 without login.</label>
+        <label class="check"><input type="checkbox" name="importVideo" checked> Show the video streams of that server here</label>
+        <label class="check"><input type="checkbox" name="exportVideo"> Share our video streams with that server (OpenTAKServer; it must be able to reach this server)</label>
+        <details><summary class="small">Ports (only if not the defaults)</summary><div class="row">
+          <div><label>Streaming</label><input type="number" name="streamPort" placeholder="8089 / 8088"></div>
+          <div><label>Enrollment</label><input type="number" name="enrollPort" placeholder="8446"></div>
+          <div><label>Marti API</label><input type="number" name="apiPort" placeholder="8443"></div>
+          <div><label>Web / OTS API</label><input type="number" name="webPort" placeholder="443"></div>
+          <div><label>RTSP</label><input type="number" name="rtspPort" placeholder="8554"></div></div></details>
+        <p><button>Connect</button> <span id="bmsg"></span></p></form></details>
+    </div>
     <p class="small muted">This server: <b>${esc(f.serverName)}</b> · ID <code>${esc(f.serverUid)}</code> · CA fingerprint <code>${esc(f.caFingerprint.slice(0, 16))}…</code></p>`;
 
   $('#inv').onsubmit = async e => {
@@ -443,6 +479,41 @@ async function pageFederation() {
       toast('Linked with ' + r.peerName); route();
     } catch (err) { $('#joinMsg').innerHTML = `<span class="err">${esc(err.message)}</span>`; btn.disabled = false; }
   };
+  $('#bf').onsubmit = async e => {
+    e.preventDefault();
+    const fm = e.target, btn = fm.querySelector('button');
+    const num = n => +fm[n].value || 0;
+    btn.disabled = true; $('#bmsg').innerHTML = '<span class="muted">connecting …</span>';
+    try {
+      const r = await api('POST', 'bridges', { host: fm.host.value, name: fm.name.value, username: fm.username.value, password: fm.password.value,
+        tls: fm.tls.checked, importVideo: fm.importVideo.checked, exportVideo: fm.exportVideo.checked, streamPort: num('streamPort'),
+        enrollPort: num('enrollPort'), apiPort: num('apiPort'), webPort: num('webPort'), rtspPort: num('rtspPort') });
+      toast('Connected to ' + r.name); route();
+    } catch (err) { $('#bmsg').innerHTML = `<span class="err">${esc(err.message)}</span>`; btn.disabled = false; }
+  };
+  app.querySelectorAll('tr[data-bid] [data-b]').forEach(btn => btn.onclick = async () => {
+    const id = btn.closest('tr').dataset.bid;
+    const b = bridges.find(x => x.id === id);
+    if (btn.dataset.b === 'toggle') { await api('PUT', 'bridges/' + id, { enabled: !b.enabled }).catch(fail); setTimeout(route, 500); }
+    if (btn.dataset.b === 'del') { if (confirm('Remove the connection to ' + b.name + '?')) { await api('DELETE', 'bridges/' + id).catch(fail); route(); } }
+    if (btn.dataset.b === 'edit') {
+      modal(`<h2>${esc(b.name)}</h2><form id="bef">
+        <label>Name of this server there (callsign of the bridge)</label><input type="text" name="callsign" value="${esc(b.callsign)}">
+        <label>Share devices of these groups (none checked = all). Data from ${esc(b.name)} is shown to these groups.</label>${groupPicker(groups, b.groups || [])}
+        <label class="check"><input type="checkbox" name="importVideo" ${b.importVideo ? 'checked' : ''}> Show its video streams here</label>
+        <label class="check"><input type="checkbox" name="exportVideo" ${b.exportVideo ? 'checked' : ''}> Share our video streams there</label>
+        <p><button>Save</button></p></form>`);
+      $('#bef').onsubmit = async e => {
+        e.preventDefault();
+        const fm = e.target;
+        try {
+          await api('PUT', 'bridges/' + id, { callsign: fm.callsign.value, importVideo: fm.importVideo.checked, exportVideo: fm.exportVideo.checked,
+            groups: [...fm.querySelectorAll('[name=g]:checked')].map(x => x.value) });
+          closeModal(); route();
+        } catch (err) { fail(err); }
+      };
+    }
+  });
   app.querySelectorAll('[data-inv]').forEach(b => b.onclick = async () => { await api('DELETE', 'federation/invites/' + b.dataset.inv).catch(fail); route(); });
   app.querySelectorAll('tr[data-id] [data-a]').forEach(b => b.onclick = async () => {
     const id = b.closest('tr').dataset.id;
@@ -466,7 +537,7 @@ async function pageFederation() {
     }
   });
   // refresh the status, but never while the admin is copying or pasting a code
-  timer = setInterval(() => { if (!document.hidden && $('#modal').hidden && !$('#invOut').innerHTML && !$('#join').code.value.trim()) route(); }, 15000);
+  timer = setInterval(() => { if (!document.hidden && $('#modal').hidden && !$('#invOut').innerHTML && !$('#join').code.value.trim() && !$('#bf').host.value) route(); }, 15000);
 }
 
 // ---------------------------------------------------------------- data packages
@@ -493,20 +564,62 @@ async function pagePackages() {
 // ---------------------------------------------------------------- video
 
 async function pageVideo() {
-  const list = await api('GET', 'videos');
-  app.innerHTML = `<h1>Video feeds</h1>
-    <p class="muted">Video addresses listed here appear in ATAK under Video → server feeds. This server only lists them; the video itself comes from the camera,
-    drone or a media server (e.g. MediaMTX, or the WebTAK camera streams on port 5036).</p>
-    <div class="card"><form id="vf" class="row"><input type="text" name="alias" placeholder="Name, e.g. Drone 1" style="flex:1">
-      <input type="text" name="url" placeholder="rtsp://… / rtmp://… / https://…/index.m3u8" style="flex:2" required><button>Add</button></form></div>
-    <div class="card table-wrap"><table><tr><th>Name</th><th>Address</th><th></th></tr>
-    ${list.map(v => `<tr><td><b>${esc(v.alias)}</b></td><td><code>${esc(v.url)}</code></td><td><button class="small danger" data-del="${esc(v.uid)}">Delete</button></td></tr>`).join('')
-      || '<tr><td colspan="3" class="muted">No video feeds.</td></tr>'}</table></div>`;
-  $('#vf').onsubmit = async e => {
-    e.preventDefault();
-    try { await api('POST', 'videos', Object.fromEntries(new FormData(e.target))); route(); } catch (err) { fail(err); }
+  const render = async () => {
+    const v = await api('GET', 'video');
+    const ok = v.running;
+    const kindName = { pushed: 'camera / drone', pulled: 'pulled', federation: 'federated server', bridge: 'TAK server', link: 'link only' };
+    const linkBtns = l => !l ? '' : Object.entries(l).map(([k, u]) =>
+      `<button class="small ghost" data-copy="${esc(u)}" title="${esc(u)}">${k.toUpperCase()}</button>`).join('');
+    app.innerHTML = `<div class="row spread"><h1>Video</h1><span>${ok ? '<span class="dot ok"></span>video server running' :
+      `<span class="dot ${v.enabled ? 'bad' : ''}"></span>${esc(v.status)}`}</span></div>
+      <p class="muted">Built-in video server (MediaMTX ${esc(v.version)}, as in OpenTAKServer). Cameras, drones and phones send video here;
+      ATAK, iTAK and WinTAK find every stream under <b>Video → server feeds</b>. Streams of federated servers and linked TAK servers appear automatically.</p>
+      ${v.enabled ? '' : '<p class="hint">The video server is switched off – <a href="#settings">Settings</a>.</p>'}
+      <div class="card table-wrap"><h2>Streams</h2><table>
+      <tr><th>Name</th><th>Type</th><th>Status</th><th>Links (click to copy)</th><th></th></tr>
+      ${v.feeds.map(f => `<tr><td><b>${esc(f.alias)}</b>${f.path ? `<div class="small muted"><code>${esc(f.path)}</code></div>` : ''}
+          ${f.source ? `<div class="small muted">from ${esc(f.source)}</div>` : ''}${f.url ? `<div class="small"><code>${esc(f.url)}</code></div>` : ''}</td>
+        <td>${esc(kindName[f.kind] || f.kind)}</td>
+        <td>${f.kind === 'link' ? '–' : f.live ? `<span class="dot ok"></span>live${f.readers ? ' · ' + f.readers + ' watching' : ''}` :
+          (f.kind === 'pushed' ? '<span class="dot"></span>waiting for the camera' : '<span class="dot"></span>starts when someone watches')}</td>
+        <td class="row">${linkBtns(f.links)}${f.links && f.links.webrtc ? `<a class="btn small" target="_blank" rel="noopener" href="${esc(f.links.webrtc)}">▶ Watch</a>` : ''}</td>
+        <td>${f.configured ? `<button class="small danger" data-del="${esc(f.kind === 'link' ? 'links/' + f.uid : 'streams/' + f.path)}">Delete</button>` : ''}</td></tr>`).join('')
+        || '<tr><td colspan="5" class="muted">No streams yet. Send video to the server (below) – it appears here by itself.</td></tr>'}
+      </table></div>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
+      <div class="card"><h2>Send video to the server</h2>
+        <p class="small">Use any name instead of <code>drone-1</code> and the user name / password of a TAK user (here: you).</p>
+        <label>DJI drone (DJI Fly / Pilot 2: Livestream → RTMP), OBS, Larix</label><code class="code">${esc(v.publish.rtmp || 'RTMP is off')}</code>
+        <label>RTSP (IP cameras, ffmpeg, Larix)</label><code class="code">${esc(v.publish.rtsp || 'RTSP is off')}</code>
+        <label>SRT (OBS, Larix, long distance / mobile networks)</label><code class="code">${esc(v.publish.srt || 'SRT is off')}</code>
+        <p class="small muted">Ports: RTSP ${v.ports.rtsp}, RTMP ${v.ports.rtmp}, SRT ${v.ports.srt} (UDP), HLS ${v.ports.hls}, WebRTC ${v.ports.webrtc}.
+        ${v.readAuth ? 'Watching needs a login.' : 'Watching is open to everyone who can reach the server (change under Settings).'}</p></div>
+      <div class="card"><h2>Add a stream</h2>
+        <form id="sf"><label>Name (path), e.g. <code>gate-camera</code></label><input type="text" name="path" required>
+        <label>Display name (optional)</label><input type="text" name="alias">
+        <label>Pull from (optional) – rtsp://, rtmp://, srt://, udp:// or https://…/index.m3u8. Empty = a camera sends to this name.</label>
+        <input type="text" name="source" placeholder="rtsp://user:password@192.168.1.50:554/stream1">
+        <p class="small muted">Pulled streams only run while someone watches.</p><p><button>Add stream</button></p></form>
+        <hr style="border:0;border-top:1px solid var(--line)">
+        <form id="lf"><label>Or only list a link to video elsewhere (not through this server)</label>
+        <div class="row"><input type="text" name="alias" placeholder="Name" style="flex:1"><input type="text" name="url" placeholder="rtsp://…" style="flex:2" required><button>Add link</button></div></form>
+      </div></div>`;
+    app.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copy(b.dataset.copy));
+    app.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
+      if (!confirm('Delete this stream?')) return;
+      await api('DELETE', 'video/' + b.dataset.del.split('/').map(encodeURIComponent).join('/')).catch(fail); render();
+    });
+    $('#sf').onsubmit = async e => {
+      e.preventDefault();
+      try { await api('POST', 'video/streams', Object.fromEntries(new FormData(e.target))); toast('Stream added'); render(); } catch (err) { fail(err); }
+    };
+    $('#lf').onsubmit = async e => {
+      e.preventDefault();
+      try { await api('POST', 'video/links', Object.fromEntries(new FormData(e.target))); render(); } catch (err) { fail(err); }
+    };
   };
-  app.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => { await api('DELETE', 'videos/' + b.dataset.del).catch(fail); route(); });
+  await render();
+  timer = setInterval(() => { if (!document.hidden && !document.activeElement.closest('form')) render().catch(() => {}); }, 5000);
 }
 
 // ---------------------------------------------------------------- settings
@@ -527,8 +640,17 @@ async function pageSettings() {
       <label>Password of the certificate files (.p12) in connection packages</label><input type="text" name="certPassword" value="${esc(s.certPassword)}">
       <label>Keep contacts on the map for (minutes after their last report)</label><input type="number" name="contactMaxAge" value="${s.contactMaxAge}" min="1">
     </div>
-    <div class="card"><h2>Federation</h2>
+    <div class="card"><h2>Video server</h2>
+      <label class="check"><input type="checkbox" name="videoEnabled" ${s.videoEnabled ? 'checked' : ''}> Run the video server (MediaMTX – RTSP 8554, RTMP 1935, SRT 8890, HLS 8888, WebRTC 8889)</label>
+      <label class="check"><input type="checkbox" name="videoReadAuth" ${s.videoReadAuth ? 'checked' : ''}> Watching needs a login (sending always does). Leave off if ATAK should play streams without a password.</label>
+      <label class="check"><input type="checkbox" name="videoFedShare" ${s.videoFedShare ? 'checked' : ''}> Exchange video with federated servers</label>
+      <label>MediaMTX program (optional – empty = automatic: next to webtak-server, or downloaded on first start)</label>
+      <input type="text" name="mediamtxPath" value="${esc(s.mediamtxPath)}" placeholder="automatic">
+    </div>
+    <div class="card"><h2>Federation and TAK server bridges</h2>
       <label class="check"><input type="checkbox" name="fedEnabled" ${s.fedEnabled ? 'checked' : ''}> Accept connections from linked servers</label>
+      <label>Position of this server (shown as a marker on linked TAK servers) – latitude, longitude</label>
+      <div class="row"><input type="number" step="any" name="lat" value="${s.lat}" style="flex:1"><input type="number" step="any" name="lon" value="${s.lon}" style="flex:1"></div>
     </div>
     <div class="card"><h2>Own certificate for the web interface (optional)</h2>
       <p class="small muted">E.g. Let's Encrypt (certbot) – removes the browser warning when the server is opened by its DNS name. Devices keep using the server's own CA.</p>
@@ -544,7 +666,8 @@ async function pageSettings() {
     const f = e.target;
     const body = { serverName: f.serverName.value, publicHost: f.publicHost.value, enableTcp: f.enableTcp.checked, anonHttp: f.anonHttp.checked,
       sendLatestSa: f.sendLatestSa.checked, certPassword: f.certPassword.value, contactMaxAge: +f.contactMaxAge.value, fedEnabled: f.fedEnabled.checked,
-      webCert: f.webCert.value, webKey: f.webKey.value };
+      webCert: f.webCert.value, webKey: f.webKey.value, videoEnabled: f.videoEnabled.checked, videoReadAuth: f.videoReadAuth.checked,
+      videoFedShare: f.videoFedShare.checked, mediamtxPath: f.mediamtxPath.value, lat: +f.lat.value, lon: +f.lon.value };
     try { const r = await api('PUT', 'settings', body); toast(r.restart ? 'Saved – restart the server to apply the TCP port change' : 'Saved'); route(); } catch (err) { fail(err); }
   };
 }

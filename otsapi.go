@@ -5,6 +5,7 @@ package main
 // device profiles, missions. Video (MediaMTX) and Meshtastic are not part of this server.
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
@@ -129,7 +130,9 @@ func (s *Server) handleOTSAPI(w http.ResponseWriter, r *http.Request) {
 			"users": users, "euds": euds, "cot_router": true})
 		return
 	}
-	if !id.Admin {
+	// like OTS: video streams can be managed by every logged-in user
+	videoAPI := p == "/api/video_streams" || p == "/api/videos" || strings.HasPrefix(p, "/api/mediamtx/stream/")
+	if !id.Admin && !videoAPI {
 		otsErr(w, 403, "Administrator role required")
 		return
 	}
@@ -452,11 +455,52 @@ func (s *Server) handleOTSAPI(w http.ResponseWriter, r *http.Request) {
 			st.Missions = keep
 		})
 		otsOK(w, "Mission deleted")
-	case p == "/api/video_streams" || p == "/api/meshtastic/channel":
+	case p == "/api/video_streams" || p == "/api/videos":
+		writeJSON(w, 200, paginate(r, s.otsVideoStreams(r)))
+	case (p == "/api/mediamtx/stream/add" && m == "POST") || (p == "/api/mediamtx/stream/update" && m == "PATCH"):
+		var b struct {
+			Path   string `json:"path"`
+			Source string `json:"source"`
+		}
+		readJSON(r, &b)
+		if err := s.SaveStream(b.Path, b.Source, "", id.User, strings.HasSuffix(p, "update")); err != nil {
+			otsErr(w, 400, err.Error())
+			return
+		}
+		otsOK(w, "Stream saved")
+	case p == "/api/mediamtx/stream/delete" && m == "DELETE":
+		if !id.Admin && !s.streamOwnedBy(q.Get("path"), id.User) {
+			otsErr(w, 403, "Only administrators can delete streams of other users")
+			return
+		}
+		if !s.DeleteStream(q.Get("path")) {
+			otsErr(w, 400, "Path not found")
+			return
+		}
+		otsOK(w, "Stream deleted")
+	case p == "/api/meshtastic/channel":
 		writeJSON(w, 200, paginate(r, nil))
-	case strings.HasPrefix(p, "/api/mediamtx/") || strings.HasPrefix(p, "/api/meshtastic/"):
-		otsErr(w, 501, "Video (MediaMTX) and Meshtastic are not part of WebTAK Server")
+	case strings.HasPrefix(p, "/api/meshtastic/"):
+		otsErr(w, 501, "Meshtastic is not part of WebTAK Server")
 	default:
 		otsErr(w, 404, "Not supported by WebTAK Server: "+p)
 	}
+}
+
+// otsVideoStreams: streams in the format of OTS /api/video_streams.
+func (s *Server) otsVideoStreams(r *http.Request) []map[string]any {
+	host := clientHost(r)
+	var out []map[string]any
+	for _, f := range s.media.Feeds() {
+		if f.Path == "" {
+			continue
+		}
+		settings, _ := json.Marshal(map[string]any{"source": f.Source, "sourceOnDemand": f.Source != "", "record": false})
+		links := s.streamLinks(host, f.Path)
+		out = append(out, map[string]any{"path": f.Path, "alias": f.Alias, "uid": f.UID, "protocol": "rtsp", "port": s.ports.RTSP,
+			"ready": f.Live, "username": f.User, "mediamtx_settings": string(settings), "source": f.Source, "record": false,
+			"rtsp_link": links["rtsp"], "hls_link": links["hls"], "webrtc_link": links["webrtc"], "kind": f.Kind,
+			"network_timeout": 10000, "rtsp_reliable": 1, "rover_port": -1, "ignore_embedded_klv": false})
+	}
+	return out
 }

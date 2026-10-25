@@ -28,6 +28,11 @@ CONNECT DEVICES
   iTAK: Settings > Network > Servers > + > Scan QR
   WinTAK: download the connection package (.zip) and drag it onto the map.
 
+VIDEO
+  The video server (mediamtx.exe, MediaMTX) is included and starts by itself.
+  Drones / OBS send to rtmp://<this-PC>:1935/<name>?user=<user>&pass=<password>,
+  ATAK finds the streams under Video. Keep mediamtx.exe next to webtak-server.exe.
+
 FORGOT THE ADMIN PASSWORD?
   Stop the server, then in a command prompt (as administrator) in this folder:
   webtak-server.exe reset-password admin
