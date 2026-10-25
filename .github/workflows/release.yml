@@ -38,10 +38,16 @@ jobs:
           build linux arm 6 dist/webtak-server-linux-armv6
           build darwin arm64 "" dist/webtak-server-macos-arm64
           build darwin amd64 "" dist/webtak-server-macos-intel
+          # video server (MediaMTX, MIT license) for the Windows download; other systems fetch it on first start
+          MTX=$(grep -o 'mediamtxVersion = "[^"]*"' media.go | cut -d'"' -f2)
+          curl -fsSL -o mtx.zip "https://github.com/bluenviron/mediamtx/releases/download/$MTX/mediamtx_${MTX}_windows_amd64.zip"
+          mkdir -p mtx && unzip -q mtx.zip -d mtx
           for a in amd64 arm64; do
             d="dist/WebTAK-Server-Windows-$a"
             mkdir -p "$d"
             build windows $a "" "$d/webtak-server.exe"
+            cp mtx/mediamtx.exe "$d/mediamtx.exe"
+            cp mtx/LICENSE "$d/MediaMTX-LICENSE.txt"
             cp install/windows/Install.bat install/windows/Uninstall.bat "$d/"
             cp install/windows/README.txt "$d/README.txt"
             (cd dist && zip -qr "WebTAK-Server-Windows-$a.zip" "WebTAK-Server-Windows-$a")

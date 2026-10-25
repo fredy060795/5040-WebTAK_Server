@@ -1,14 +1,17 @@
 # WebTAK Server
 
 **Your own TAK server in one file.** Runs on Windows, Raspberry Pi, Linux and macOS – no database, no Docker,
-no nginx, no command line knowledge needed. Works with **ATAK, iTAK and WinTAK** like OpenTAKServer (OTS), and
-several servers can be **linked together (federation)** so all their devices see each other.
+no nginx, no command line knowledge needed. Works with **ATAK, iTAK and WinTAK** like OpenTAKServer (OTS), has the
+same **video server (MediaMTX)** built in, and several servers can be **linked together** – WebTAK Servers among
+each other (federation) and **with OpenTAKServer** (bridge) – so all their devices and video streams are shared.
 
 ```
  ATAK / iTAK / WinTAK ──▶ WebTAK Server A ◀══ federation ══▶ WebTAK Server B ◀── ATAK / iTAK / WinTAK
                                ▲                                   ║
-                               ║            federation             ║
-                               ╚════════════ Server C ═════════════╝
+                               ║ bridge                 federation ║
+                               ▼                                   ║
+                         OpenTAKServer                  WebTAK Server C
+                    (its devices and video)
 ```
 
 | | OpenTAKServer (see `OTS Anleitung Webseite.pdf`) | WebTAK Server |
@@ -17,7 +20,9 @@ several servers can be **linked together (federation)** so all their devices see
 | Runs on | Linux | Windows, Raspberry Pi (all models), Linux, macOS, Docker |
 | Setup | default password `administrator`/`password`, edit nginx files | web wizard: set the admin password, done |
 | Connect devices | QR code / data package | QR code (ATAK + iTAK) / data package (WinTAK) |
-| Link servers | – | invite code, both directions, chains and rings |
+| Video server | MediaMTX (installed with OTS) | MediaMTX, started and configured automatically |
+| Link servers | – (no server federation) | invite code, both directions, chains and rings – incl. video |
+| Link with OTS | – | bridge: OTS devices and video appear here, ours there |
 
 ---
 
@@ -90,6 +95,46 @@ other: positions, markers, drawings, chat (also direct messages) and data packag
   each other's certificates and agree on a secret for later reconnects; all traffic is TLS encrypted.
 - The invite code contains all addresses of A. If B must use another address (DNS name, ZeroTier IP), enter it in
   the *Address* field when joining.
+- **Video is shared too:** every stream of A appears on B as `fed-<server A>/<name>` (and the other way round) and
+  shows up in ATAK's video list there. The video travels through the same federation connection, so it also works when
+  only B can reach A – and it only flows while someone actually watches.
+
+## Linking with OpenTAKServer (bridge)
+
+OpenTAKServer has no server-to-server federation. WebTAK Server therefore connects to an OTS **like a device** and
+relays in both directions: OTS users see the devices of this server *and of every federated WebTAK Server*, and
+everyone here sees the OTS devices. Works with OpenTAKServer, TAK Server and FreeTAKServer.
+
+1. In the OTS web interface create a user for the bridge, e.g. `webtak-bridge`, and add it to the groups that should be shared.
+2. Here: *Federation → OpenTAKServer and other TAK servers → Connect* – enter the OTS address, user and password.
+   The certificate is requested automatically on port 8446 (like ATAK's QR setup), then the bridge connects on 8089.
+3. Optional video:
+   - *Show the video streams of that server here* – OTS streams appear as `ots-<name>/<stream>` (pulled from the OTS
+     MediaMTX with the bridge user, only while someone watches).
+   - *Share our video streams with that server* – our streams are registered on the OTS (`wts-<name>/<stream>`); the
+     OTS MediaMTX pulls them from us, so the OTS must be able to reach this server's RTSP port.
+
+The bridge appears on the OTS as one contact (*"<server name> (WebTAK)"*, position under *Settings*). Group chat,
+positions, markers and data package links pass both ways, and direct messages from here to an OTS user work.
+Direct messages from an OTS user to a single user *here* do not arrive – OTS only delivers them to devices connected to
+it directly. Use group chat (*All Chat Rooms*) across the bridge for that direction.
+
+## Video (MediaMTX)
+
+The video server starts with WebTAK Server – nothing to install (Windows: included in the download; Raspberry Pi /
+Linux / macOS: downloaded automatically on the first start, or put `mediamtx` next to `webtak-server`).
+
+- **Send video** with the login of any TAK user, to any name (it appears by itself):
+  - DJI drone (DJI Fly / Pilot 2 → Livestream → RTMP), OBS, Larix: `rtmp://<server>:1935/drone-1?user=<user>&pass=<password>`
+  - IP cameras, ffmpeg: `rtsp://<user>:<password>@<server>:8554/drone-1`
+  - SRT (mobile networks): `srt://<server>:8890?streamid=publish:drone-1:<user>:<password>`
+- **Watch:** ATAK / iTAK / WinTAK list every stream under *Video* (server feeds, same format as OTS); in the browser
+  under *Video → ▶ Watch* (WebRTC) or with any player via RTSP/HLS.
+- **Pull streams** from cameras on demand (*Video → Add a stream*, source `rtsp://…`), e.g. a fixed IP camera.
+- Watching without a login is allowed by default (ATAK plays streams without a password); switch on
+  *Watching needs a login* under *Settings* if needed. Sending always needs a login.
+- The OTS video API (`/api/video_streams`, `/api/mediamtx/stream/add|update|delete`) is supported, so **WebTAK
+  (port 5036)** registers its helmet/phone cameras here automatically, exactly as with OTS.
 
 ## Ports
 
@@ -101,6 +146,10 @@ other: positions, markers, drawings, chat (also direct messages) and data packag
 | 8443/tcp | web interface and Marti API (data packages) over HTTPS |
 | 8080/tcp | Marti API over HTTP; web interface only from the server computer itself |
 | 9000/tcp | federation |
+| 8554/tcp | video RTSP (cameras send, ATAK plays) – 8000-8001/udp for RTSP over UDP |
+| 1935/tcp | video RTMP (DJI drones, OBS) |
+| 8890/udp | video SRT |
+| 8888/tcp, 8889/tcp, 8189/udp | video in the browser (HLS, WebRTC) |
 
 All ports can be changed with command line options (`webtak-server -help`). For access from the internet, forward
 these ports in your router, or use **ZeroTier/Tailscale** (no port forwarding, as in the OTS guide).
@@ -109,16 +158,16 @@ these ports in your router, or use **ZeroTier/Tailscale** (no port forwarding, a
 
 - **ATAK, iTAK, WinTAK** and other CoT clients: TCP and SSL streaming (CoT XML), certificate
   enrollment (`/Marti/api/tls/…`, QR `tak://com.atakmap.app/enroll`), data packages (`/Marti/sync/…`),
-  contacts, groups, device profiles, video feed list (`/Marti/vcm`), ping/pong, latest positions for new devices.
+  contacts, groups, device profiles, video feed list (`/Marti/vcm`, OTS format), ping/pong, latest positions for new devices.
 - **Groups like OTS / TAK Server:** IN = may send into the group, OUT = receives from it; `__ANON__` is the default group.
 - **OTS web API** (`/api/login`, `/api/user/*`, `/api/users`, `/api/groups`, `/api/eud`, `/api/atak_qr_string`,
-  `/api/truststore`, `/api/profiles`, `/api/missions`): tools built for OpenTAKServer work unchanged. Tested with
+  `/api/truststore`, `/api/profiles`, `/api/missions`, `/api/video_streams`, `/api/mediamtx/stream/*`): tools built for
+  OpenTAKServer work unchanged. Tested with
   **WebTAK** (port 5036) – enter `https://<server>:8443` as OTS address with an admin login and allow the
   self-signed certificate.
-- **Not included** (compared to OTS): media server (MediaMTX – use the WebTAK camera streams or a separate
-  MediaMTX; feeds can be listed under *Video*), Meshtastic, Mumble, the full Data Sync / mission API, TAK protocol
-  version 1 (protobuf – devices automatically stay on XML). Federation is between WebTAK Servers (own protocol);
-  linking with an official TAK Server federation is not supported.
+- **Not included** (compared to OTS): video recording, Meshtastic, Mumble, the full Data Sync / mission API, TAK protocol
+  version 1 (protobuf – devices automatically stay on XML). Federation is between WebTAK Servers (own protocol); other
+  TAK servers are linked through the bridge (official TAK Server federation on port 9001 is not supported).
 
 ## Good to know
 

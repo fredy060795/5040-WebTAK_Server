@@ -239,8 +239,16 @@ func (h *Hub) sendLatestTo(c *Client) {
 	}
 }
 
-// FromFederation handles an event received from a federated server.
-func (h *Hub) FromFederation(l *fedConn, raw []byte) {
+// fedSource: a federated WebTAK Server or a bridged TAK server.
+type fedSource interface {
+	sourceID() string
+	localGroups() []string
+}
+
+func (c *fedConn) sourceID() string { return c.getLink().ID }
+
+// FromFederation handles an event received from a federated server or a bridge.
+func (h *Hub) FromFederation(l fedSource, raw []byte) {
 	ev, err := ParseEvent(raw)
 	if err != nil {
 		return
@@ -251,10 +259,10 @@ func (h *Hub) FromFederation(l *fedConn, raw []byte) {
 	}
 	if ev.IsSA() {
 		h.mu.Lock()
-		h.latest[ev.UID] = &cachedSA{raw: raw, ev: ev, viaLink: l.link.ID, at: time.Now()}
+		h.latest[ev.UID] = &cachedSA{raw: raw, ev: ev, viaLink: l.sourceID(), at: time.Now()}
 		h.mu.Unlock()
 	}
-	h.route(raw, ev, nil, l.link.ID, l.localGroups())
+	h.route(raw, ev, nil, l.sourceID(), l.localGroups())
 }
 
 func (h *Hub) fedTag() string { return "WebTAK-Server-" + h.srv.store.Config().ServerUID }
@@ -291,6 +299,9 @@ func (h *Hub) route(raw []byte, ev *Event, srcClient *Client, viaLink string, gr
 		return // every recipient is local
 	}
 	h.fed.Broadcast(raw, ev, viaLink, groups, srcClient != nil)
+	if h.srv.bridges != nil {
+		h.srv.bridges.Broadcast(raw, ev, viaLink, groups)
+	}
 }
 
 // forClient adapts an event for one device: download links of shared data packages point to
@@ -336,7 +347,9 @@ func (h *Hub) Contacts() []map[string]any {
 		origin := "local"
 		if sa.viaLink != "" {
 			origin = "federation"
-			if h.fed != nil {
+			if strings.HasPrefix(sa.viaLink, "bridge:") {
+				origin = "TAK server: " + h.srv.bridges.name(strings.TrimPrefix(sa.viaLink, "bridge:"))
+			} else if h.fed != nil {
 				origin = "federation: " + h.fed.linkName(sa.viaLink)
 			}
 		}

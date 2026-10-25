@@ -25,6 +25,13 @@ type Config struct {
 	FedEnabled    bool   `json:"fedEnabled"`    // accept federation connections
 	SendLatestSA  bool   `json:"sendLatestSa"`  // newly connected devices get the positions of everyone online
 	ContactMaxAge int    `json:"contactMaxAge"` // minutes a contact stays in the latest-SA cache after its last report
+
+	VideoEnabled  bool    `json:"videoEnabled"`  // run the video server (MediaMTX)
+	VideoReadAuth bool    `json:"videoReadAuth"` // watching video needs a login (publishing always does)
+	MediaMTXPath  string  `json:"mediamtxPath"`  // own MediaMTX program; empty = bundled / downloaded automatically
+	VideoFedShare bool    `json:"videoFedShare"` // offer video feeds to federated servers
+	Lat           float64 `json:"lat"`           // position of this server (marker of the TAK server bridge)
+	Lon           float64 `json:"lon"`           //
 }
 
 type Membership struct {
@@ -126,11 +133,42 @@ type Profile struct {
 	Active     bool   `json:"active"`
 }
 
+// VideoFeed: either a stream on the video server (Path set; Source = address it is pulled from, empty
+// = a camera/drone pushes it) or only a link to video somewhere else (URL set).
 type VideoFeed struct {
 	UID     string    `json:"uid"`
 	Alias   string    `json:"alias"`
-	URL     string    `json:"url"`
+	URL     string    `json:"url,omitempty"`
+	Path    string    `json:"path,omitempty"`
+	Source  string    `json:"source,omitempty"`
+	User    string    `json:"user,omitempty"`
 	Created time.Time `json:"created"`
+}
+
+// Bridge: connection to another TAK server (OpenTAKServer, TAK Server, FreeTAKServer) as a client.
+// That server sees the bridge as one device; data flows in both directions.
+type Bridge struct {
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	Host        string    `json:"host"`
+	StreamPort  int       `json:"streamPort"` // 8089 (SSL) or 8088 (TCP)
+	EnrollPort  int       `json:"enrollPort"` // 8446
+	APIPort     int       `json:"apiPort"`    // 8443 (Marti with client certificate)
+	WebPort     int       `json:"webPort"`    // 443 (OTS web API, for sharing video)
+	RTSPPort    int       `json:"rtspPort"`   // 8554 (MediaMTX of the other server)
+	TLS         bool      `json:"tls"`
+	Username    string    `json:"username"`
+	Password    string    `json:"password"` // needed to renew the certificate and to watch its video
+	CertPEM     string    `json:"certPem,omitempty"`
+	KeyPEM      string    `json:"keyPem,omitempty"`
+	CAPEM       string    `json:"caPem,omitempty"`
+	UID         string    `json:"uid"`
+	Callsign    string    `json:"callsign"`
+	Enabled     bool      `json:"enabled"`
+	Groups      []string  `json:"groups"`      // local groups shared; empty = all
+	ImportVideo bool      `json:"importVideo"` // show the other server's video feeds here
+	ExportVideo bool      `json:"exportVideo"` // register our video feeds on the other server (OTS)
+	Created     time.Time `json:"created"`
 }
 
 // Federation link to another server. Both sides keep a link record; the connection is made by the
@@ -171,6 +209,8 @@ type State struct {
 	Videos     []*VideoFeed        `json:"videos"`
 	FedLinks   []*FedLink          `json:"fedLinks"`
 	FedInvites []*FedInvite        `json:"fedInvites"`
+	Bridges    []*Bridge           `json:"bridges"`
+	VideoMigr  bool                `json:"videoMigrated"`
 	NextID     int                 `json:"nextId"`
 }
 
@@ -193,6 +233,8 @@ func defaultConfig() Config {
 		FedEnabled:    true,
 		SendLatestSA:  true,
 		ContactMaxAge: 30,
+		VideoEnabled:  true,
+		VideoFedShare: true,
 	}
 }
 
@@ -218,6 +260,9 @@ func OpenStore(dir string) (*Store, error) {
 	}
 	if s.Packages == nil {
 		s.Packages = map[string]*Package{}
+	}
+	if !s.VideoMigr { // state from before the video server existed
+		s.Config.VideoEnabled, s.Config.VideoFedShare, s.VideoMigr = true, true, true
 	}
 	if s.NextID == 0 {
 		s.NextID = 1

@@ -38,6 +38,10 @@ const (
 	fPing
 	fPong
 	fError
+	fFeeds       // video feeds this server offers (JSON)
+	fStreamOpen  // tunnel: open a connection to the video server (id)
+	fStreamData  // tunnel: data (id + bytes)
+	fStreamClose // tunnel: close (id)
 )
 
 const (
@@ -127,6 +131,7 @@ type fedConn struct {
 	rx, tx    atomic.Int64
 	sentFiles map[string]bool
 	recv      map[string]*os.File
+	vt        *videoTunnel
 }
 
 func (c *fedConn) Close() {
@@ -676,7 +681,9 @@ func (f *Federation) session(conn net.Conn, link FedLink) {
 	logf("Federation: connected with %s (%s)", link.PeerName, c.remote)
 	f.touch(link.ID)
 
+	c.vt = newVideoTunnel(c)
 	go c.writer()
+	go c.offerFeedsLoop()
 	// current positions so both sides see each other right away
 	for _, raw := range f.srv.hub.LatestForFederation(link.ID) {
 		if ev, err := ParseEvent(raw); err == nil {
@@ -685,6 +692,8 @@ func (f *Federation) session(conn net.Conn, link FedLink) {
 	}
 	c.reader()
 	c.Close()
+	c.vt.close()
+	f.srv.media.SetAuto(link.ID, nil)
 	for _, fh := range c.recv {
 		fh.Close()
 		os.Remove(fh.Name())
@@ -727,6 +736,10 @@ func (c *fedConn) writer() {
 			return
 		case <-ping.C:
 			if !write(fPing, nil) {
+				return
+			}
+		case fr := <-c.vt.out: // video tunnel
+			if !write(fr.typ, fr.payload) {
 				return
 			}
 		case it := <-c.out:
@@ -816,6 +829,10 @@ func (c *fedConn) reader() {
 		case fError:
 			logf("Federation %s: %s", c.getLink().PeerName, string(p))
 			return
+		case fFeeds:
+			c.receiveFeeds(p)
+		case fStreamOpen, fStreamData, fStreamClose:
+			c.vt.frame(typ, p)
 		}
 	}
 }

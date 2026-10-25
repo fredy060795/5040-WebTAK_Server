@@ -11,6 +11,13 @@ services:
       - "8080:8080"   # Marti API (HTTP)
       - "8446:8446"   # certificate enrollment
       - "9000:9000"   # federation
+      - "8554:8554"   # video RTSP
+      - "1935:1935"   # video RTMP (drones, OBS)
+      - "8888:8888"   # video HLS
+      - "8889:8889"   # video WebRTC
+      - "8890:8890/udp" # video SRT
+      - "8189:8189/udp" # WebRTC media
+      - "8000-8001:8000-8001/udp" # RTSP over UDP
     volumes:
       - webtak-data:/data
 volumes:

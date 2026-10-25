@@ -299,15 +299,23 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	case seg[0] == "packages" && len(seg) == 2 && m == "DELETE":
 		s.packages.Delete(seg[1])
 		writeJSON(w, 200, map[string]any{"ok": true})
-	case route == "videos" && m == "GET":
-		var out []VideoFeed
-		s.store.Read(func(st *State) {
-			for _, v := range st.Videos {
-				out = append(out, *v)
-			}
-		})
-		writeJSON(w, 200, out)
-	case route == "videos" && m == "POST":
+	case route == "video" && m == "GET":
+		s.apiVideo(w, r, id.User)
+	case route == "video/streams" && m == "POST":
+		var b struct{ Path, Source, Alias string }
+		readJSON(r, &b)
+		if err := s.SaveStream(b.Path, b.Source, strings.TrimSpace(b.Alias), id.User, false); err != nil {
+			jsonErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+	case len(seg) > 2 && seg[0] == "video" && seg[1] == "streams" && m == "DELETE":
+		if !s.DeleteStream(strings.Join(seg[2:], "/")) {
+			jsonErr(w, 404, "Stream not found.")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true})
+	case route == "video/links" && m == "POST":
 		var b struct{ Alias, URL string }
 		readJSON(r, &b)
 		if !strings.Contains(b.URL, "://") {
@@ -315,19 +323,73 @@ func (s *Server) handleAdmin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.store.Update(func(st *State) {
-			st.Videos = append(st.Videos, &VideoFeed{UID: randomHex(8), Alias: orDefault(strings.TrimSpace(b.Alias), b.URL), URL: strings.TrimSpace(b.URL), Created: time.Now()})
+			st.Videos = append(st.Videos, &VideoFeed{UID: newUUID(), Alias: orDefault(strings.TrimSpace(b.Alias), b.URL), URL: strings.TrimSpace(b.URL), User: id.User, Created: time.Now()})
 		})
 		writeJSON(w, 200, map[string]any{"ok": true})
-	case seg[0] == "videos" && len(seg) == 2 && m == "DELETE":
+	case len(seg) == 3 && seg[0] == "video" && seg[1] == "links" && m == "DELETE":
 		s.store.Update(func(st *State) {
 			keep := st.Videos[:0]
 			for _, v := range st.Videos {
-				if v.UID != seg[1] {
+				if v.UID != seg[2] {
 					keep = append(keep, v)
 				}
 			}
 			st.Videos = keep
 		})
+		writeJSON(w, 200, map[string]any{"ok": true})
+	case route == "bridges" && m == "GET":
+		writeJSON(w, 200, s.bridges.Status())
+	case route == "bridges" && m == "POST":
+		var b BridgeInput
+		readJSON(r, &b)
+		br, err := s.bridges.Add(b)
+		if err != nil {
+			jsonErr(w, 400, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "name": br.Name})
+	case len(seg) == 2 && seg[0] == "bridges" && m == "PUT":
+		var b struct {
+			Enabled, ImportVideo, ExportVideo *bool
+			Groups                            *[]string
+			Callsign                          *string
+		}
+		readJSON(r, &b)
+		s.store.Update(func(st *State) {
+			for _, x := range st.Bridges {
+				if x.ID != seg[1] {
+					continue
+				}
+				if b.Enabled != nil {
+					x.Enabled = *b.Enabled
+				}
+				if b.ImportVideo != nil {
+					x.ImportVideo = *b.ImportVideo
+				}
+				if b.ExportVideo != nil {
+					x.ExportVideo = *b.ExportVideo
+				}
+				if b.Groups != nil {
+					x.Groups = *b.Groups
+				}
+				if b.Callsign != nil && strings.TrimSpace(*b.Callsign) != "" {
+					x.Callsign = strings.TrimSpace(*b.Callsign)
+				}
+			}
+		})
+		s.bridges.Reconcile()
+		writeJSON(w, 200, map[string]any{"ok": true})
+	case len(seg) == 2 && seg[0] == "bridges" && m == "DELETE":
+		s.store.Update(func(st *State) {
+			keep := st.Bridges[:0]
+			for _, x := range st.Bridges {
+				if x.ID != seg[1] {
+					keep = append(keep, x)
+				}
+			}
+			st.Bridges = keep
+		})
+		s.bridges.Reconcile()
 		writeJSON(w, 200, map[string]any{"ok": true})
 	case route == "settings" && m == "GET":
 		writeJSON(w, 200, s.settingsView())
@@ -847,7 +909,9 @@ func (s *Server) settingsView() map[string]any {
 	c := s.store.Config()
 	return map[string]any{"serverName": c.ServerName, "publicHost": c.PublicHost, "enableTcp": c.EnableTCP, "anonHttp": c.AnonHTTP,
 		"certPassword": c.CertPassword, "webCert": c.WebCert, "webKey": c.WebKey, "fedEnabled": c.FedEnabled,
-		"sendLatestSa": c.SendLatestSA, "contactMaxAge": c.ContactMaxAge, "dataDir": s.dataDir}
+		"sendLatestSa": c.SendLatestSA, "contactMaxAge": c.ContactMaxAge, "dataDir": s.dataDir,
+		"videoEnabled": c.VideoEnabled, "videoReadAuth": c.VideoReadAuth, "mediamtxPath": c.MediaMTXPath, "videoFedShare": c.VideoFedShare,
+		"lat": c.Lat, "lon": c.Lon}
 }
 
 func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
@@ -862,6 +926,11 @@ func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
 		FedEnabled    *bool
 		SendLatestSA  *bool `json:"sendLatestSa"`
 		ContactMaxAge *int
+		VideoEnabled  *bool
+		VideoReadAuth *bool
+		MediaMTXPath  *string `json:"mediamtxPath"`
+		VideoFedShare *bool
+		Lat, Lon      *float64
 	}
 	if err := readJSON(r, &b); err != nil {
 		jsonErr(w, 400, err.Error())
@@ -917,7 +986,44 @@ func (s *Server) apiSettings(w http.ResponseWriter, r *http.Request) {
 		if b.ContactMaxAge != nil && *b.ContactMaxAge > 0 {
 			c.ContactMaxAge = *b.ContactMaxAge
 		}
+		if b.VideoEnabled != nil {
+			c.VideoEnabled = *b.VideoEnabled
+		}
+		if b.VideoReadAuth != nil {
+			c.VideoReadAuth = *b.VideoReadAuth
+		}
+		if b.MediaMTXPath != nil {
+			c.MediaMTXPath = strings.TrimSpace(*b.MediaMTXPath)
+		}
+		if b.VideoFedShare != nil {
+			c.VideoFedShare = *b.VideoFedShare
+		}
+		if b.Lat != nil && b.Lon != nil && *b.Lat >= -90 && *b.Lat <= 90 && *b.Lon >= -180 && *b.Lon <= 180 {
+			c.Lat, c.Lon = *b.Lat, *b.Lon
+		}
 	})
+	s.media.Kick()
 	go s.pki.ensureServerCert()
 	writeJSON(w, 200, map[string]any{"ok": true, "restart": restart})
+}
+
+func (s *Server) apiVideo(w http.ResponseWriter, r *http.Request, user string) {
+	status, bin, running := s.media.Status()
+	host := s.deviceHost(r)
+	cfg := s.store.Config()
+	feeds := []map[string]any{}
+	for _, f := range s.media.Feeds() {
+		m := map[string]any{"uid": f.UID, "alias": f.Alias, "path": f.Path, "kind": f.Kind, "source": f.Source, "origin": f.Origin,
+			"url": f.URL, "live": f.Live, "readers": f.Readers, "tracks": f.Tracks, "configured": f.Configured, "user": f.User}
+		if f.Path != "" {
+			m["links"] = s.streamLinks(host, f.Path)
+		}
+		feeds = append(feeds, m)
+	}
+	writeJSON(w, 200, map[string]any{
+		"enabled": cfg.VideoEnabled, "status": status, "program": bin, "running": running, "version": mediamtxVersion,
+		"readAuth": cfg.VideoReadAuth, "fedShare": cfg.VideoFedShare, "host": host, "feeds": feeds,
+		"ports":   map[string]int{"rtsp": s.ports.RTSP, "rtmp": s.ports.RTMP, "hls": s.ports.HLS, "webrtc": s.ports.WebRTC, "srt": s.ports.SRT},
+		"publish": s.publishLinks(host, "drone-1", user),
+	})
 }

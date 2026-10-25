@@ -23,6 +23,7 @@ const (
 	linuxBin    = "/usr/local/bin/webtak-server"
 	linuxData   = "/var/lib/webtak-server"
 	allTCPPorts = "8088,8089,8443,8080,8446,9000"
+	videoPorts  = "8554/tcp,1935/tcp,8888/tcp,8889/tcp,8890/udp,8189/udp,8000:8001/udp"
 )
 
 func winDirs() (bin, data string) {
@@ -130,6 +131,7 @@ func uninstall(args []string) error {
 		exec.Command("schtasks", "/End", "/TN", winTask).Run()
 		exec.Command("schtasks", "/Delete", "/F", "/TN", winTask).Run()
 		exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name="+winTask).Run()
+		exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name="+winTask+" video").Run()
 		time.Sleep(2 * time.Second)
 		os.RemoveAll(bin)
 		if *purge {
@@ -193,6 +195,12 @@ func installWindows(exe, portable string, noBrowser bool) error {
 	if err := copyFile(exe, target, 0o755); err != nil {
 		return fmt.Errorf("copy program: %w (is the server still running? close its window first)", err)
 	}
+	// video server (MediaMTX) shipped in the zip next to webtak-server.exe
+	if mtx := filepath.Join(filepath.Dir(exe), "mediamtx.exe"); fileExists(mtx) {
+		if err := copyFile(mtx, filepath.Join(binDir, "mediamtx.exe"), 0o755); err != nil {
+			fmt.Println("WARNING: video server not copied:", err)
+		}
+	}
 	if _, err := os.Stat(filepath.Join(dataDir, "state.json")); os.IsNotExist(err) {
 		if _, err := os.Stat(filepath.Join(portable, "state.json")); err == nil {
 			fmt.Println("Taking over the data of the portable version from", portable)
@@ -204,9 +212,15 @@ func installWindows(exe, portable string, noBrowser bool) error {
 	os.MkdirAll(dataDir, 0o700)
 	fmt.Println("Opening the Windows firewall …")
 	exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name="+winTask).Run()
+	exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name="+winTask+" video").Run()
 	if err := run("netsh", "advfirewall", "firewall", "add", "rule", "name="+winTask, "dir=in", "action=allow",
 		"program="+target, "enable=yes", "profile=any"); err != nil {
 		fmt.Println("WARNING:", err)
+	}
+	// the video server is its own program – bundled, or downloaded later into the data folder
+	for _, mtx := range []string{filepath.Join(binDir, "mediamtx.exe"), filepath.Join(dataDir, "mediamtx", "mediamtx.exe")} {
+		run("netsh", "advfirewall", "firewall", "add", "rule", "name="+winTask+" video", "dir=in", "action=allow",
+			"program="+mtx, "enable=yes", "profile=any")
 	}
 	fmt.Println("Registering the background service (starts with Windows) …")
 	xmlPath := filepath.Join(os.TempDir(), "webtak-server-task.xml")
@@ -292,7 +306,10 @@ func installLinux(exe, portable string) error {
 		for _, p := range strings.Split(allTCPPorts, ",") {
 			exec.Command("ufw", "allow", p+"/tcp").Run()
 		}
-		fmt.Println("Firewall (ufw) opened for ports", allTCPPorts)
+		for _, p := range strings.Split(videoPorts, ",") {
+			exec.Command("ufw", "allow", p).Run()
+		}
+		fmt.Println("Firewall (ufw) opened for ports", allTCPPorts, "and video", videoPorts)
 	}
 	host := "<this-device-ip>"
 	if ips := localIPs(); len(ips) > 0 {
@@ -304,4 +321,9 @@ func installLinux(exe, portable string) error {
 	fmt.Println("(Your browser warns about the certificate the first time – choose \"Advanced\" → \"Continue\".)")
 	fmt.Println("Status: sudo systemctl status webtak-server   Log: sudo journalctl -u webtak-server -f")
 	return nil
+}
+
+func fileExists(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }
