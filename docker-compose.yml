@@ -1,0 +1,17 @@
+# Set PUBLIC address under Settings in the web interface after the first start
+# (inside Docker the server cannot see the host's IP address).
+services:
+  webtak-server:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8088:8088"   # CoT TCP (unencrypted)
+      - "8089:8089"   # CoT SSL
+      - "8443:8443"   # web interface + Marti API (HTTPS)
+      - "8080:8080"   # Marti API (HTTP)
+      - "8446:8446"   # certificate enrollment
+      - "9000:9000"   # federation
+    volumes:
+      - webtak-data:/data
+volumes:
+  webtak-data:

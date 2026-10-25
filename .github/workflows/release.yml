@@ -1,0 +1,59 @@
+name: Release
+
+# Builds the downloads for Windows, Raspberry Pi, Linux and macOS and publishes them as a GitHub release.
+# Start it with a tag (git tag v1.0.0 && git push origin v1.0.0) or by hand under Actions → Release → Run workflow.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version, e.g. v1.0.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test -count=1 ./...
+      - name: Build
+        env:
+          VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          set -e
+          mkdir -p dist
+          LDF="-s -w -X main.Version=${VERSION#v}"
+          build() { CGO_ENABLED=0 GOOS=$1 GOARCH=$2 GOARM=$3 go build -trimpath -ldflags "$LDF" -o "$4" .; }
+          build linux amd64 "" dist/webtak-server-linux-amd64
+          build linux arm64 "" dist/webtak-server-linux-arm64
+          build linux arm 6 dist/webtak-server-linux-armv6
+          build darwin arm64 "" dist/webtak-server-macos-arm64
+          build darwin amd64 "" dist/webtak-server-macos-intel
+          for a in amd64 arm64; do
+            d="dist/WebTAK-Server-Windows-$a"
+            mkdir -p "$d"
+            build windows $a "" "$d/webtak-server.exe"
+            cp install/windows/Install.bat install/windows/Uninstall.bat "$d/"
+            cp install/windows/README.txt "$d/README.txt"
+            (cd dist && zip -qr "WebTAK-Server-Windows-$a.zip" "WebTAK-Server-Windows-$a")
+            rm -rf "$d"
+          done
+          cp install/install.sh dist/install.sh
+          (cd dist && sha256sum * > SHA256SUMS.txt)
+          ls -la dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version || github.ref_name }}
+        run: |
+          gh release view "$VERSION" >/dev/null 2>&1 || gh release create "$VERSION" --title "WebTAK Server $VERSION" --target "$GITHUB_SHA" --notes-file install/RELEASE_NOTES.md
+          gh release upload "$VERSION" dist/* --clobber
