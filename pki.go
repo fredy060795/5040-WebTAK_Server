@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
@@ -324,14 +325,54 @@ func (p *PKI) SignCSR(body []byte, username string) (*x509.Certificate, error) {
 			return nil, fmt.Errorf("certificate request is not readable: %v", err)
 		}
 	}
-	csr, err := x509.ParseCertificateRequest(der)
+	pub, err := csrPublicKey(der)
 	if err != nil {
 		return nil, err
 	}
-	if err := csr.CheckSignature(); err != nil {
+	return p.signClient(pub, username, 3650)
+}
+
+// csrPublicKey returns the verified public key of a certificate request. The subject is not needed (the
+// common name is always the user) – and some clients encode it in ways Go's strict parser refuses, e.g.
+// node-forge puts "alpha_10" into a PrintableString, where "_" is not allowed. OTS accepts those, so do we.
+func csrPublicKey(der []byte) (crypto.PublicKey, error) {
+	if csr, err := x509.ParseCertificateRequest(der); err == nil {
+		if err := csr.CheckSignature(); err != nil {
+			return nil, err
+		}
+		return csr.PublicKey, nil
+	}
+	var raw struct {
+		Info struct {
+			Raw     asn1.RawContent
+			Version int
+			Subject asn1.RawValue
+			PKInfo  asn1.RawValue
+			Attrs   asn1.RawValue `asn1:"optional,tag:0"`
+		}
+		SigAlg pkix.AlgorithmIdentifier
+		Sig    asn1.BitString
+	}
+	if _, err := asn1.Unmarshal(der, &raw); err != nil {
+		return nil, fmt.Errorf("certificate request is not readable: %v", err)
+	}
+	pub, err := x509.ParsePKIXPublicKey(raw.Info.PKInfo.FullBytes)
+	if err != nil {
 		return nil, err
 	}
-	return p.signClient(csr.PublicKey, username, 3650)
+	algs := map[string]x509.SignatureAlgorithm{
+		"1.2.840.113549.1.1.5": x509.SHA1WithRSA, "1.2.840.113549.1.1.11": x509.SHA256WithRSA,
+		"1.2.840.113549.1.1.12": x509.SHA384WithRSA, "1.2.840.113549.1.1.13": x509.SHA512WithRSA,
+		"1.2.840.10045.4.3.2": x509.ECDSAWithSHA256, "1.2.840.10045.4.3.3": x509.ECDSAWithSHA384, "1.2.840.10045.4.3.4": x509.ECDSAWithSHA512,
+	}
+	alg, ok := algs[raw.SigAlg.Algorithm.String()]
+	if !ok {
+		return nil, fmt.Errorf("certificate request: unsupported signature %s", raw.SigAlg.Algorithm)
+	}
+	if err := (&x509.Certificate{PublicKey: pub}).CheckSignature(alg, raw.Info.Raw, raw.Sig.RightAlign()); err != nil {
+		return nil, fmt.Errorf("certificate request signature: %v", err)
+	}
+	return pub, nil
 }
 
 func (p *PKI) TrustStoreP12(password string) ([]byte, error) {

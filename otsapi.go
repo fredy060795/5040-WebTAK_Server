@@ -5,6 +5,7 @@ package main
 // device profiles, missions. Video (MediaMTX) and Meshtastic are not part of this server.
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -393,11 +394,10 @@ func (s *Server) handleOTSAPI(w http.ResponseWriter, r *http.Request) {
 		otsOK(w, "Profile saved")
 	case p == "/api/missions" && m == "GET":
 		var list []map[string]any
-		s.store.Read(func(st *State) {
+		s.store.Update(func(st *State) {
 			for _, ms := range st.Missions {
-				list = append(list, map[string]any{"name": ms.Name, "description": ms.Description, "creator_uid": ms.CreatorUID,
-					"create_time": otsTime(ms.Created), "password_protected": ms.Password != "", "groups": ms.Groups, "tool": ms.Tool,
-					"default_role": ms.DefaultRole, "uids": ms.UIDs, "contents": ms.Contents})
+				normalizeMission(ms)
+				list = append(list, s.otsMissionJSON(ms))
 			}
 		})
 		writeJSON(w, 200, paginate(r, list))
@@ -439,9 +439,11 @@ func (s *Server) handleOTSAPI(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			st.Missions = append(st.Missions, &Mission{Name: b.Name, Description: b.Description, CreatorUID: b.CreatorUID,
-				Tool: orDefault(b.Tool, "public"), Password: b.Password, Groups: groups, DefaultRole: b.DefaultRole, Created: time.Now(),
-				UIDs: []string{}, Contents: []string{}})
+			nm := &Mission{Name: b.Name, Description: b.Description, CreatorUID: b.CreatorUID,
+				Tool: orDefault(b.Tool, "public"), Password: b.Password, Groups: groups, DefaultRole: b.DefaultRole, Created: time.Now()}
+			normalizeMission(nm) // hashes the password
+			nm.addChange(&MissionChange{Type: "CREATE_MISSION", Time: time.Now(), CreatorUID: b.CreatorUID})
+			st.Missions = append(st.Missions, nm)
 		})
 		otsOK(w, "Mission saved")
 	case p == "/api/missions" && m == "DELETE":
@@ -478,10 +480,46 @@ func (s *Server) handleOTSAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		otsOK(w, "Stream deleted")
-	case p == "/api/meshtastic/channel":
-		writeJSON(w, 200, paginate(r, nil))
-	case strings.HasPrefix(p, "/api/meshtastic/"):
-		otsErr(w, 501, "Meshtastic is not part of WebTAK Server")
+	case p == "/api/meshtastic/generate_psk":
+		writeJSON(w, 200, map[string]any{"psk": base64.StdEncoding.EncodeToString(randomBytes(32))})
+	case p == "/api/meshtastic/channel" && m == "GET":
+		var list []map[string]any
+		s.store.Read(func(st *State) {
+			for _, c := range st.Mesh {
+				item := map[string]any{}
+				json.Unmarshal([]byte(c.Data), &item)
+				item["id"], item["name"], item["url"], item["psk"] = c.ID, c.Name, c.URL, c.PSK
+				list = append(list, item)
+			}
+		})
+		writeJSON(w, 200, paginate(r, list))
+	case p == "/api/meshtastic/channel" && m == "POST":
+		// channels are only stored and listed (WebTAK talks to Meshtastic radios itself)
+		var b map[string]any
+		readJSON(r, &b)
+		name, _ := b["name"].(string)
+		u, _ := b["url"].(string)
+		psk, _ := b["psk"].(string)
+		if strings.TrimSpace(name) == "" && strings.TrimSpace(u) == "" {
+			otsErr(w, 400, "Channel name or URL missing")
+			return
+		}
+		data, _ := json.Marshal(b)
+		s.store.Update(func(st *State) {
+			st.Mesh = append(st.Mesh, &MeshChannel{ID: st.nextID(), Name: name, URL: u, PSK: psk, Data: string(data), Created: time.Now()})
+		})
+		otsOK(w, "Channel saved")
+	case p == "/api/meshtastic/channel" && m == "DELETE":
+		s.store.Update(func(st *State) {
+			keep := st.Mesh[:0]
+			for _, c := range st.Mesh {
+				if c.URL != q.Get("url") {
+					keep = append(keep, c)
+				}
+			}
+			st.Mesh = keep
+		})
+		otsOK(w, "Channel deleted")
 	default:
 		otsErr(w, 404, "Not supported by WebTAK Server: "+p)
 	}

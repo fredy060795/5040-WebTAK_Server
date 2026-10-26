@@ -12,6 +12,7 @@ import (
 	"html"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -38,6 +39,8 @@ func (s *Server) handleMarti(w http.ResponseWriter, r *http.Request, mode string
 			fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><ns2:certificateConfig xmlns="http://bbn.com/marti/xml/config" xmlns:ns2="com.bbn.marti.config"><nameEntries><nameEntry name="O" value="WebTAK"/><nameEntry name="OU" value="TAK"/></nameEntries></ns2:certificateConfig>`)
 		case strings.HasPrefix(p, "/Marti/api/tls/signClient") && r.Method == http.MethodPost:
 			s.signClient(w, r, id.User, strings.HasSuffix(p, "/v2"))
+		case p == "/Marti/api/tls/profile/enrollment":
+			s.deviceProfile(w, r, q.Get("clientUid"), true)
 		default:
 			http.NotFound(w, r)
 		}
@@ -97,8 +100,10 @@ func (s *Server) handleMarti(w http.ResponseWriter, r *http.Request, mode string
 		s.martiSearch(w, r)
 	case p == "/Marti/vcm":
 		s.martiVideo(w, r)
-	case p == "/Marti/api/missions":
-		s.martiMissions(w)
+	case p == "/Marti/api/missions" || strings.HasPrefix(p, "/Marti/api/missions/"):
+		s.handleMissions(w, r, id)
+	case p == "/Marti/api/video":
+		s.martiVideoJSON(w, r, id)
 	case p == "/Marti/api/citrap" || p == "/Marti/api/contacts/all":
 		writeJSON(w, 200, []any{})
 	default:
@@ -108,11 +113,25 @@ func (s *Server) handleMarti(w http.ResponseWriter, r *http.Request, mode string
 }
 
 func (s *Server) contentURL(r *http.Request, hash string) string {
-	scheme := "https"
-	if r.TLS == nil {
-		scheme = "http"
+	return s.baseURL(r) + "/Marti/sync/content?hash=" + hash
+}
+
+// baseURL: this server as the caller reached it. The port is taken from the listener, not from the Host
+// header – some clients send the header without the port.
+func (s *Server) baseURL(r *http.Request) string {
+	if la, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		if _, port, err := net.SplitHostPort(la.String()); err == nil {
+			scheme := "https"
+			if r.TLS == nil {
+				scheme = "http"
+			}
+			return scheme + "://" + joinHostPort(clientHost(r), atoiDefault(port, 0))
+		}
 	}
-	return scheme + "://" + r.Host + "/Marti/sync/content?hash=" + hash
+	if r.TLS == nil {
+		return "http://" + r.Host
+	}
+	return "https://" + r.Host
 }
 
 // ---------- enrollment ----------
@@ -121,6 +140,10 @@ func (s *Server) signClient(w http.ResponseWriter, r *http.Request, username str
 	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
 	if err != nil {
 		http.Error(w, err.Error(), 400)
+		return
+	}
+	if len(strings.TrimSpace(string(body))) == 0 {
+		w.WriteHeader(200) // no request: only checks the login (OpenTAKServer behaves the same)
 		return
 	}
 	cert, err := s.pki.SignCSR(body, username)
@@ -413,22 +436,6 @@ func atoiDefault(s string, d int) int {
 	return d
 }
 
-func (s *Server) martiMissions(w http.ResponseWriter) {
-	var data []map[string]any
-	s.store.Read(func(st *State) {
-		for _, m := range st.Missions {
-			data = append(data, map[string]any{"name": m.Name, "description": m.Description, "creatorUid": m.CreatorUID,
-				"createTime": m.Created.UTC().Format("2006-01-02T15:04:05.000Z"), "tool": m.Tool, "groups": m.Groups,
-				"passwordProtected": m.Password != "", "defaultRole": map[string]any{"type": orDefault(m.DefaultRole, "MISSION_SUBSCRIBER")},
-				"keywords": []string{}, "uids": []any{}, "contents": []any{}})
-		}
-	})
-	if data == nil {
-		data = []map[string]any{}
-	}
-	writeJSON(w, 200, map[string]any{"version": "3", "type": "Mission", "data": data, "nodeId": s.store.Config().ServerUID})
-}
-
 func orDefault(s, d string) string {
 	if s == "" {
 		return d
@@ -533,4 +540,39 @@ func xmlField(b []byte, name string) string {
 		return strings.TrimSpace(html.UnescapeString(string(m[1])))
 	}
 	return ""
+}
+
+// /Marti/api/video: video list as JSON (OpenTAKServer format). Streams on our video server are offered as
+// HLS through this port (/hls/…) with the caller's token, like OTS does through its web port.
+func (s *Server) martiVideoJSON(w http.ResponseWriter, r *http.Request, id *identity) {
+	tok := ""
+	if id != nil && id.User != "" && id.Via != "anon" {
+		s.store.Update(func(st *State) {
+			if u := findUser(st, id.User); u != nil {
+				if u.APIToken == "" {
+					u.APIToken = randomHex(24)
+				}
+				tok = u.APIToken
+			}
+		})
+	}
+	base := s.baseURL(r)
+	conns := []map[string]any{}
+	for _, f := range s.media.Feeds() {
+		link := f.URL
+		if f.Path != "" {
+			link = base + "/hls/" + f.Path + "/index.m3u8"
+			if tok != "" {
+				link += "?jwt=" + tok
+			}
+		}
+		if link == "" {
+			continue
+		}
+		feed := map[string]any{"uuid": f.UID, "active": true, "alias": f.Alias, "url": link, "order": 0, "macAddress": "", "roverPort": "-1",
+			"ignoreEmbeddedKLV": "false", "source": link, "networkTimeout": "10000", "bufferTime": "", "rtspReliable": "1", "thumbnail": "",
+			"classification": "", "latitude": "", "longitude": "", "fov": "", "heading": "", "range": "", "width": 0, "height": 0, "bitrate": 0}
+		conns = append(conns, map[string]any{"uuid": f.UID, "active": true, "alias": f.Alias, "thumbnail": "", "classification": "", "feeds": []any{feed}})
+	}
+	writeJSON(w, 200, map[string]any{"videoConnections": conns})
 }

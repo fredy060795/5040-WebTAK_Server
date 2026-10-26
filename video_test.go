@@ -142,3 +142,31 @@ func TestFederationVideoBothDirections(t *testing.T) {
 		t.Fatalf("B's video on A: %q", c)
 	}
 }
+
+// WebTAK plays the server's streams through the web port like with OTS: /hls/<path>/index.m3u8?jwt=…
+func TestHLSThroughWebPort(t *testing.T) {
+	needVideo(t)
+	srv := startVideoServer(t, "Alpha")
+	srv.CreateUser("pilot", "pilot-pass", false, nil)
+	publish(t, fmt.Sprintf("rtsp://pilot:pilot-pass@127.0.0.1:%d/drone-1", srv.ports.RTSP))
+	waitUntil(t, "stream live", 20*time.Second, func() bool { srv.media.poll(); return hasFeed(srv, "drone-1", true) })
+	srv.store.Update(func(s *State) { s.Config.VideoReadAuth = true })
+	tok := ""
+	srv.store.Update(func(s *State) { u := findUser(s, "pilot"); u.APIToken = "tok-pilot"; tok = u.APIToken })
+	hc := httpClient() // follows redirects (MediaMTX cookie check), without cookies like WebTAK's server
+	get := func(u string) (int, string) {
+		r, err := hc.Get(u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		return r.StatusCode, string(b)
+	}
+	base := fmt.Sprintf("https://127.0.0.1:%d/hls/drone-1/index.m3u8", srv.ports.HTTPS)
+	if code, b := get(base + "?jwt=" + tok); code != 200 || !strings.Contains(b, "#EXTM3U") {
+		t.Fatalf("hls with token: %d %s", code, b)
+	}
+	if code, _ := get(base); code == 200 {
+		t.Fatal("hls without login while login is required")
+	}
+}
