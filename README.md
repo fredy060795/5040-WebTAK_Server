@@ -31,6 +31,8 @@ each other (federation) and **with OpenTAKServer** (bridge) – so all their dev
 ### Windows
 
 1. Download **`WebTAK-Server-Windows-amd64.zip`** from [Releases](https://github.com/fredy060795/5040-WebTAK_Server/releases/latest) and unzip it.
+   (Not the green *Code → Download ZIP* button – that is only the source code without the program. If you used it
+   anyway, `install\windows\Install.bat` downloads the program from the releases by itself.)
 2. **Try it:** double-click `webtak-server.exe`. Click *Allow* when Windows asks about network access.
    The browser opens the setup page by itself.
 3. **Install for good:** double-click `Install.bat` (confirm the administrator question). The server then runs in
@@ -158,14 +160,20 @@ these ports in your router, or use **ZeroTier/Tailscale** (no port forwarding, a
 
 - **ATAK, iTAK, WinTAK** and other CoT clients: TCP and SSL streaming (CoT XML), certificate
   enrollment (`/Marti/api/tls/…`, QR `tak://com.atakmap.app/enroll`), data packages (`/Marti/sync/…`),
-  contacts, groups, device profiles, video feed list (`/Marti/vcm`, OTS format), ping/pong, latest positions for new devices.
+  contacts, groups, device profiles on enrollment and connection (`/Marti/api/tls/profile/enrollment`,
+  `/Marti/api/device/profile/connection`), video lists (`/Marti/vcm`, `/Marti/api/video`, OTS format), Data Sync missions
+  (`/Marti/api/missions/…`: create, subscribe, map items and files, CoT sent to a mission, change log and notices),
+  ping/pong, latest positions for new devices.
+- **Video through the web port** like OTS's nginx: `https://<server>:8443/hls/<stream>/index.m3u8?jwt=<token>` and `/webrtc/…`.
 - **Groups like OTS / TAK Server:** IN = may send into the group, OUT = receives from it; `__ANON__` is the default group.
 - **OTS web API** (`/api/login`, `/api/user/*`, `/api/users`, `/api/groups`, `/api/eud`, `/api/atak_qr_string`,
-  `/api/truststore`, `/api/profiles`, `/api/missions`, `/api/video_streams`, `/api/mediamtx/stream/*`): tools built for
+  `/api/truststore`, `/api/profiles`, `/api/missions`, `/api/video_streams`, `/api/mediamtx/stream/*`,
+  `/api/meshtastic/channel`, `/api/meshtastic/generate_psk`): tools built for
   OpenTAKServer work unchanged. Tested with
   **WebTAK** (port 5036) – enter `https://<server>:8443` as OTS address with an admin login and allow the
   self-signed certificate.
-- **Not included** (compared to OTS): video recording, Meshtastic, Mumble, the full Data Sync / mission API, TAK protocol
+- **Not included** (compared to OTS): video recording, a Meshtastic gateway (channels are only stored; WebTAK talks to the
+  radios itself), Mumble, mission logs/keywords/external data and mission federation, TAK protocol
   version 1 (protobuf – devices automatically stay on XML). Federation is between WebTAK Servers (own protocol); other
   TAK servers are linked through the bridge (official TAK Server federation on port 9001 is not supported).
 

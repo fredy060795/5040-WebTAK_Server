@@ -118,8 +118,59 @@ type Mission struct {
 	Groups      []string  `json:"groups"`
 	DefaultRole string    `json:"defaultRole"`
 	Created     time.Time `json:"created"`
-	UIDs        []string  `json:"uids"`
-	Contents    []string  `json:"contents"` // package hashes
+	UIDs        []string  `json:"uids"`     // old format, read once and moved to Items
+	Contents    []string  `json:"contents"` // old format, read once and moved to Files
+
+	// Data Sync (like TAK Server): map items, files, subscribers, change log
+	GUID     string            `json:"guid"`
+	PassHash string            `json:"passHash,omitempty"`
+	Keywords []string          `json:"keywords"`
+	ChatRoom string            `json:"chatRoom"`
+	Items    []*MissionItem    `json:"items"`
+	Files    []*MissionFile    `json:"files"`
+	CoT      map[string]string `json:"cot"` // uid -> latest event
+	Subs     []*MissionSub     `json:"subs"`
+	Changes  []*MissionChange  `json:"changes"`
+}
+
+type MissionItem struct {
+	UID        string    `json:"uid"`
+	CreatorUID string    `json:"creatorUid"`
+	Time       time.Time `json:"time"`
+	Type       string    `json:"type"`
+	Callsign   string    `json:"callsign"`
+	Lat        float64   `json:"lat"`
+	Lon        float64   `json:"lon"`
+}
+
+type MissionFile struct {
+	Hash       string    `json:"hash"`
+	CreatorUID string    `json:"creatorUid"`
+	Time       time.Time `json:"time"`
+}
+
+type MissionSub struct {
+	ClientUID string    `json:"clientUid"`
+	Username  string    `json:"username"`
+	Token     string    `json:"token"`
+	Time      time.Time `json:"time"`
+}
+
+type MissionChange struct {
+	Type       string    `json:"type"` // CREATE_MISSION, ADD_CONTENT, REMOVE_CONTENT
+	Time       time.Time `json:"time"`
+	CreatorUID string    `json:"creatorUid"`
+	UID        string    `json:"uid,omitempty"`  // map item
+	Hash       string    `json:"hash,omitempty"` // file
+}
+
+type MeshChannel struct {
+	ID      int       `json:"id"`
+	Name    string    `json:"name"`
+	URL     string    `json:"url"`
+	PSK     string    `json:"psk"`
+	Data    string    `json:"data"` // everything else the tool sent (JSON)
+	Created time.Time `json:"created"`
 }
 
 type Profile struct {
@@ -210,6 +261,7 @@ type State struct {
 	FedLinks   []*FedLink          `json:"fedLinks"`
 	FedInvites []*FedInvite        `json:"fedInvites"`
 	Bridges    []*Bridge           `json:"bridges"`
+	Mesh       []*MeshChannel      `json:"meshChannels"`
 	VideoMigr  bool                `json:"videoMigrated"`
 	NextID     int                 `json:"nextId"`
 }

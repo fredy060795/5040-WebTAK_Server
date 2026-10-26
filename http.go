@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -56,6 +58,8 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, mode string) {
 		s.handleMarti(w, r, mode)
 	case strings.HasPrefix(p, "/api/"):
 		s.handleOTSAPI(w, r)
+	case strings.HasPrefix(p, "/hls/") || strings.HasPrefix(p, "/webrtc/"):
+		s.mediaProxy(w, r)
 	case strings.HasPrefix(p, "/admin/api/"):
 		if mode == "http" && !isLoopback(r) {
 			jsonErr(w, 403, "Please use the HTTPS address for the web interface.")
@@ -183,4 +187,48 @@ func clientHost(r *http.Request) string {
 		return h
 	}
 	return hostOnly(r.Context().Value(http.LocalAddrContextKey).(net.Addr).String())
+}
+
+// mediaProxy passes /hls/<path>/… and /webrtc/<path>/… to the video server, like OpenTAKServer's nginx does
+// on its web port. Logins (jwt=, token=, user/pass) are checked by the video server itself.
+func (s *Server) mediaProxy(w http.ResponseWriter, r *http.Request) {
+	port, prefix := s.ports.HLS, "/hls"
+	if strings.HasPrefix(r.URL.Path, "/webrtc/") {
+		port, prefix = s.ports.WebRTC, "/webrtc"
+	}
+	if _, _, running := s.media.Status(); !running || port <= 0 {
+		http.Error(w, "video server not running", http.StatusServiceUnavailable)
+		return
+	}
+	target := &url.URL{Scheme: "http", Host: joinHostPort("127.0.0.1", port)}
+	if s.bindAddr != "" {
+		target.Host = joinHostPort(s.bindAddr, port)
+	}
+	rp := httputil.NewSingleHostReverseProxy(target)
+	orig := rp.Director
+	rp.Director = func(req *http.Request) {
+		orig(req)
+		req.URL.Path = strings.TrimPrefix(req.URL.Path, prefix)
+		req.URL.RawPath = ""
+		req.Host = target.Host
+		// MediaMTX keeps HLS sessions in its own cookies; our login cookie stays here
+		var keep []string
+		for _, c := range req.Cookies() {
+			if c.Name != "wts_session" {
+				keep = append(keep, c.Name+"="+c.Value)
+			}
+		}
+		req.Header.Del("Cookie")
+		if len(keep) > 0 {
+			req.Header.Set("Cookie", strings.Join(keep, "; "))
+		}
+	}
+	rp.ModifyResponse = func(resp *http.Response) error {
+		// MediaMTX redirects to its own root (e.g. /<path>/index.m3u8?cookieCheck=1) – keep the prefix
+		if loc := resp.Header.Get("Location"); strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, prefix+"/") {
+			resp.Header.Set("Location", prefix+loc)
+		}
+		return nil
+	}
+	rp.ServeHTTP(w, r)
 }

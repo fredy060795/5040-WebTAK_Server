@@ -176,3 +176,9 @@ func contains(list []string, s string) bool {
 	}
 	return false
 }
+
+func randomBytes(n int) []byte {
+	b := make([]byte, n)
+	rand.Read(b)
+	return b
+}

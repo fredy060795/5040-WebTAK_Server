@@ -178,6 +178,9 @@ func (h *Hub) FromClient(c *Client, raw []byte) {
 	if ev.IsSA() {
 		h.trackSA(c, ev, raw)
 	}
+	if h.srv.missionCoT(raw, ev, c) {
+		return // Data Sync: goes to the mission's subscribers
+	}
 	in, _ := c.groups()
 	h.route(raw, ev, c, "", in)
 }
